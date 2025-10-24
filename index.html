@@ -100,7 +100,7 @@
   CONFIG: change to your deployed server (HTTPS)
 */
 // const SERVER_BASE = location.origin.startsWith('http://localhost') ? 'http://localhost:3000' : 'https://your-server.example'; 
-const SERVER_BASE = 'https://transparenttransaction01.vercel.app'
+const SERVER_BASE = 'https://transparenttransaction01.vercel.app/'
 
 // local app state saved to localStorage
 const LS = 'tta_pwa_v2_local';
@@ -170,7 +170,9 @@ async function registerAndSubscribe(){
   if(!phone) return alert('Enter your phone');
   // register on server (create user), then subscribe for push
   if(!('serviceWorker' in navigator)) alert('Service worker unsupported — install wont work');
+
   const reg = await navigator.serviceWorker.register('sw.js').catch(e=>{ console.warn(e); return null; });
+  const registration = await navigator.serviceWorker.ready;
   if(!reg) return alert('Service worker registration failed');
   // fetch vapid key
   const resp = await fetch(SERVER_BASE + '/vapidPublicKey'); const vapidKey = await resp.text();
