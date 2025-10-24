@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Transparent Transaction App</title>
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root{--accent:#0066ff;--bg:#f7f9fc;font-family:Inter,system-ui,Arial}
+  body{background:var(--bg);margin:0;padding:18px;color:#0f172a}
+  header{display:flex;align-items:center;gap:12px}
+  .logo{width:52px;height:52px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#00c6ff);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+  .card{background:#fff;border-radius:12px;padding:12px;margin-top:12px;box-shadow:0 6px 18px rgba(2,6,23,0.05)}
+  input,select,button{padding:10px;border-radius:8px;border:1px solid #e6eefc}
+  button{background:var(--accent);color:#fff;border:0;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid #e6eefc}
+  .row{display:flex;gap:8px}
+  .small{font-size:13px;color:#6b7280}
+  .list{margin-top:10px}
+  .item{padding:8px;border-radius:8px;background:#fbfdff;margin-bottom:8px}
+  .pending{background:linear-gradient(90deg,rgba(250,204,21,0.06),transparent)}
+  .muted{color:#6b7280;font-size:13px}
+</style>
+</head>
+<body>
+  <header>
+    <div class="logo">T</div>
+    <div>
+      <h1 style="margin:0">Transparent Transaction App</h1>
+      <div class="small">Transfer debt in one tap — push approvals</div>
+    </div>
+  </header>
+
+  <div class="card" id="registerCard">
+    <div class="small">1) Register your phone (this links you to push subscription)</div>
+    <div class="row" style="margin-top:8px">
+      <input id="myPhone" placeholder="Your phone (digits, e.g. 9198...)" />
+      <button id="btnRegister">Register & Subscribe</button>
+    </div>
+    <div class="small muted" style="margin-top:8px">We only store your phone (plain) and upload hashed contacts for matching.</div>
+  </div>
+
+  <div class="card">
+    <div class="small">2) Contacts</div>
+    <div style="margin-top:8px" class="row">
+      <button id="btnPick" class="ghost">Add from Contacts</button>
+      <button id="btnUploadContacts">Upload hashed contacts</button>
+      <input id="manualContact" placeholder="Manual phone to add" />
+      <button id="btnAddManual">Add</button>
+    </div>
+    <div id="contactsList" class="list"></div>
+  </div>
+
+  <div class="card">
+    <div class="small">3) Create transaction (1→1 approval)</div>
+    <div style="margin-top:8px" class="row">
+      <select id="selFrom"></select>
+      <select id="selTo"></select>
+      <input id="txAmount" type="number" placeholder="Amount" style="width:100px" />
+      <input id="txNote" placeholder="Note" />
+      <button id="btnCreateTx">Create & Notify</button>
+    </div>
+    <div class="muted small" style="margin-top:6px">Transaction will be pending until other party approves via push.</div>
+  </div>
+
+  <div class="card">
+    <div class="small">4) Credit Transfer (A transfers debt from B to C — requires mutual contacts)</div>
+    <div class="row" style="margin-top:8px">
+      <select id="selA"></select>
+      <select id="selB"></select>
+      <select id="selC"></select>
+      <input id="trAmount" type="number" placeholder="Amount" style="width:100px" />
+      <button id="btnCreateTransfer">Create Transfer</button>
+    </div>
+    <div class="muted small" style="margin-top:6px">Server will check that A,B,C have each other in their uploaded contacts before notifying.</div>
+  </div>
+
+  <div class="card">
+    <div class="small">Pending Requests</div>
+    <div id="pendingList" class="list"></div>
+    <div style="margin-top:8px" class="row">
+      <button id="btnRefresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="small">Debug & Export</div>
+    <div style="margin-top:8px" class="row">
+      <button id="btnExport">Export Local State</button>
+      <button id="btnClear" class="ghost">Clear Local</button>
+    </div>
+    <pre id="debug" style="margin-top:8px;white-space:pre-wrap;font-size:12px"></pre>
+  </div>
+
+  <!-- modal root -->
+  <div id="modalRoot" style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;background:rgba(0,0,0,0.35);z-index:9999"></div>
+
+<script>
+/*
+  CONFIG: change to your deployed server (HTTPS)
+*/
+// const SERVER_BASE = location.origin.startsWith('http://localhost') ? 'http://localhost:3000' : 'https://your-server.example'; 
+const SERVER_BASE = 'http://localhost:3000'
+
+// local app state saved to localStorage
+const LS = 'tta_pwa_v2_local';
+let localState = {me: null, contacts: [], subscriptions: {}, pending: []};
+
+function saveLocal(){ localStorage.setItem(LS, JSON.stringify(localState)); }
+function loadLocal(){ const v = localStorage.getItem(LS); if(v) localState = JSON.parse(v); render(); }
+
+// Helpers
+const $ = id=>document.getElementById(id);
+function normalizePhone(p){ return (p||'').toString().replace(/[\\s()+-]/g,''); }
+function sha256hex(str){ // return Promise<string>
+  const enc = new TextEncoder(); return crypto.subtle.digest('SHA-256', enc.encode(str)).then(buf=>{ return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join(''); });
+}
+
+// UI render
+function render(){
+  // contacts list
+  const cl = $('contactsList'); cl.innerHTML='';
+  localState.contacts.forEach(c=>{
+    const d = document.createElement('div'); d.className='item';
+    d.textContent = `${c.name || c.phone} (${c.phone})`;
+    cl.appendChild(d);
+  });
+  const selIds = ['selFrom','selTo','selA','selB','selC'];
+  selIds.forEach(id=>{
+    const s = $(id); if(!s) return;
+    const prev = s.value;
+    s.innerHTML = '<option value="">--select--</option>' + localState.contacts.map(c=>`<option value="${c.phone}">${(c.name||c.phone)}</option>`).join('');
+    s.value = prev || '';
+  });
+  $('debug').textContent = JSON.stringify(localState, null, 2);
+  // pending list
+  fetchPending();
+}
+
+// Contact picker (feature-detect)
+async function pickContact(){
+  if(navigator.contacts && navigator.contacts.select){
+    try{
+      const props = ['name','tel'];
+      const opts = {multiple: false};
+      const res = await navigator.contacts.select(props, opts);
+      if(res && res.length){
+        const c = res[0];
+        const name = Array.isArray(c.name) ? (c.name[0]||'') : c.name || '';
+        const tel = Array.isArray(c.tel) ? (c.tel[0]||'') : (c.tel||'');
+        addLocalContact({name, phone: normalizePhone(tel)});
+      }
+    }catch(e){ alert('Contact pick canceled or not allowed'); }
+  } else {
+    alert('Contact Picker not available in this browser. Add manually.');
+  }
+}
+
+function addLocalContact({name, phone}){
+  phone = normalizePhone(phone);
+  if(!phone) return alert('No phone');
+  if(localState.contacts.some(c=>c.phone===phone)) return alert('Already added');
+  localState.contacts.push({name, phone});
+  saveLocal(); render();
+}
+
+// Register & Push subscription
+async function registerAndSubscribe(){
+  const phone = normalizePhone($('myPhone').value);
+  if(!phone) return alert('Enter your phone');
+  // register on server (create user), then subscribe for push
+  if(!('serviceWorker' in navigator)) alert('Service worker unsupported — install wont work');
+  const reg = await navigator.serviceWorker.register('sw.js').catch(e=>{ console.warn(e); return null; });
+  if(!reg) return alert('Service worker registration failed');
+  // fetch vapid key
+  const resp = await fetch(SERVER_BASE + '/vapidPublicKey'); const vapidKey = await resp.text();
+  const converted = urlBase64ToUint8Array(vapidKey);
+  const sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey: converted});
+  // send to server: phone + subscription
+  await fetch(SERVER_BASE + '/save-subscription', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({phone, subscription: sub})});
+  localState.me = {phone};
+  localState.subscriptions[phone] = sub;
+  saveLocal(); render();
+  alert('Registered & subscribed for push.');
+}
+
+// upload hashed contacts for matching on server
+async function uploadContactsHashed(){
+  if(!localState.me) return alert('Register first');
+  const phone = localState.me.phone;
+  const hashed = [];
+  for(const c of localState.contacts){
+    const h = await sha256hex(normalizePhone(c.phone));
+    hashed.push(h);
+  }
+  await fetch(SERVER_BASE + '/save-contacts', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({phone, contactHashes: hashed})});
+  alert('Contacts uploaded (hashed). Server can now validate mutual contacts.');
+}
+
+// create 1->1 transaction (pending)
+async function createTransaction(){
+  if(!localState.me) return alert('Register first');
+  const from = localState.me.phone;
+  const to = normalizePhone($('selTo').value || '');
+  const amount = Number($('txAmount').value || 0);
+  const note = $('txNote').value || '';
+  if(!to || !amount) return alert('Select recipient and amount');
+  // post to server: create pending transaction and send push to recipient
+  const body = {type:'txn', from, to, amount, note};
+  const resp = await fetch(SERVER_BASE + '/create-request', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await resp.json();
+  alert('Request created: ' + j.requestId + ' — waiting for approval');
+  fetchPending();
+}
+
+// create transfer A (initiator) wants to transfer debt from B to C
+async function createTransfer(){
+  if(!localState.me) return alert('Register first');
+  const A = localState.me.phone;
+  const B = normalizePhone($('selB').value || '');
+  const C = normalizePhone($('selC').value || '');
+  const amount = Number($('trAmount').value || 0);
+  if(!A || !B || !C || !amount) return alert('Choose A,B,C and amount');
+  if(A===B || A===C || B===C) return alert('All three must be different');
+  // post to server
+  const body = {type:'transfer', from:A, via:B, to:C, amount, note:''};
+  const resp = await fetch(SERVER_BASE + '/create-request', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await resp.json();
+  if(!j.ok) return alert('Failed: ' + (j.error||'unknown'));
+  if(j.status === 'mutual-check-failed') return alert('Mutual contacts check failed: transfer not allowed');
+  alert('Transfer request created: ' + j.requestId + '. Waiting for approvals from B & C.');
+  fetchPending();
+}
+
+// fetch pending requests for this user
+async function fetchPending(){
+  if(!localState.me) return;
+  const resp = await fetch(SERVER_BASE + '/pending-for/' + encodeURIComponent(localState.me.phone));
+  const list = await resp.json();
+  const out = $('pendingList'); out.innerHTML='';
+  if(!Array.isArray(list) || list.length===0) out.innerHTML = '<div class="muted">No pending requests</div>';
+  else list.forEach(r=>{
+    const d = document.createElement('div'); d.className = 'item' + (r.status==='pending' ? ' pending' : '');
+    d.innerHTML = `<div><strong>${r.type.toUpperCase()}</strong> • ${r.amount} • ${r.note||''}</div>
+                   <div class="muted">From: ${r.from} • To: ${r.to||''} • Via: ${r.via||''}</div>
+                   <div style="margin-top:8px"><button onclick='approve("${r.requestId}","yes")'>Approve</button> <button class="ghost" onclick='approve("${r.requestId}","no")'>Reject</button></div>`;
+    out.appendChild(d);
+  });
+}
+
+// approve endpoint (also used by SW notification actions)
+async function approve(requestId, decision){
+  if(!localState.me) return alert('Register first');
+  const resp = await fetch(SERVER_BASE + '/record-approval', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({requestId, approver: localState.me.phone, decision})});
+  const j = await resp.json();
+  alert('Recorded: ' + JSON.stringify(j));
+  fetchPending();
+}
+
+// Export local state
+function exportLocal(){ const blob = new Blob([JSON.stringify(localState,null,2)], {type:'application/json'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download='tta_local.json'; a.click(); URL.revokeObjectURL(a.href); }
+
+// small helper to convert base64 key
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+/* ---------- Event wiring ---------- */
+$('btnPick').addEventListener('click', ()=>pickContact());
+$('btnAddManual').addEventListener('click', ()=>{ const p = normalizePhone($('manualContact').value); if(!p) return; addLocalContact({phone:p}); $('manualContact').value=''; });
+$('btnRegister').addEventListener('click', ()=> registerAndSubscribe());
+$('btnUploadContacts').addEventListener('click', ()=> uploadContactsHashed());
+$('btnCreateTx').addEventListener('click', ()=> createTransaction());
+$('btnCreateTransfer').addEventListener('click', ()=> createTransfer());
+$('btnRefresh').addEventListener('click', ()=> fetchPending());
+$('btnExport').addEventListener('click', ()=> exportLocal());
+$('btnClear').addEventListener('click', ()=>{ if(confirm('Clear local?')){ localState={me:null,contacts:[],subscriptions:{},pending:[]}; saveLocal(); render(); } });
+
+/* init */
+if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').then(()=>console.log('sw ok')).catch(e=>console.warn(e)); }
+loadLocal();
+</script>
+</body>
+</html>
