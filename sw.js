@@ -1,5 +1,5 @@
 const CACHE_NAME = 'tta-cache-v1';
-const FILES = ['/', '/index.html', '/manifest.json'];
+const FILES = ['./', './index.html', './manifest.json'];
 
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE_NAME).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
